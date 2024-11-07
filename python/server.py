@@ -1,45 +1,19 @@
-import onnxruntime_genai
-import fastapi
-from fastapi import Request
+from fastapi import FastAPI, Request
+from fastapi.concurrency import asynccontextmanager
 from fastapi.responses import ORJSONResponse
-from functools import lru_cache
-import os
+from mlc_llm import MLCEngine
 
-model_dir = os.path.join(os.getcwd(), "models/cpu_and_mobile/cpu-int4-awq-block-128-acc-level-4")
+model: str = None
+engines: MLCEngine = {}
 
-app = fastapi.FastAPI()
-
-@lru_cache(maxsize=256)
-def load_model():
-    model = onnxruntime_genai.Model(model_dir)
-    tokenizer = onnxruntime_genai.Tokenizer(model)
-    print("[INFO/MAIN]: Loaded model and tokenizer into LRU cache")
-    return model, tokenizer
-
-@lru_cache(maxsize=128)
-def invoke(model: any, tokenizer: any, query: str):
-    search_options = {}
-    search_options['max_length'] = 8192
-    search_options['temperature'] = 0.0
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    model = "HF://HuggingFaceTB/smollm-135M-instruct-add-basics-q0f16-MLC"
+    engines["main"] = MLCEngine(model, mode="local")
+    yield
+    engines["main"].terminate()
     
-    chat_template = '<|user|>\n{input} <|end|>\n<|assistant|>'
-    prompt = f'{chat_template.format(input=query)}'
-    
-    input_tokens = tokenizer.encode(prompt)
-    params = onnxruntime_genai.GeneratorParams(model)
-    params.try_graph_capture_with_max_batch_size(4)
-    params.set_search_options(**search_options)
-    params.input_ids = input_tokens
-
-    output_tokens = model.generate(params)
-
-    output_text = tokenizer.decode(output_tokens)
-
-    assistant_response = output_text.split(query)[1].strip()
-
-    return assistant_response
-
-[model, tokenizer] = load_model()
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 def root():
@@ -50,5 +24,26 @@ async def generate(req: Request):
     body = await req.json()
     query = body['query']
     
-    msg = invoke(model, tokenizer, query)
-    return ORJSONResponse({"query": query, "response": msg})
+    response = engines["main"].chat.completions.create(
+        messages=[{"role": "system", "content": """
+                    You will be provided with data based on topics like world hunger, etc. although that may not be specified.\n
+                    Past, present and predicted future data will be given as well as the algorithm used to predict it.\n
+                    Your job is to create a 1-2 sentence, jargon-free human-readable summary, as people who are not knowledgable in this topic.\n
+                    may also wish to see what the data is about, so you need to create a hypothesis/summary to immediately and concisely tell them what is going to happen.\n\n
+                    Examples (Take x as past/present data, y as future, predicted data and z as the algorithm used):\n\n
+                    Schema for X: {{...},{...},{...}}\n
+                    Schema for Y: {{...},{...},{...}}\n
+                    Schema for Z: "{STRING}"\n\n
+                    
+                    First Example:\n\n
+                    User: {x}\n\n{y}\n\nAlgorithm Used: {z} (Take country as Afghanistan, data topic as Average Caloric Intake, x as data ranging from 2008-2023, and y as future predicted data ranging from 2024 to any year in the future
+                    and z as Holt-Winters Exponential Smoothing)
+                    
+                    Assistant: Afghanistan's average caloric intake has been on a steady rise, ~1.8% per year. Future data indicate that percentage may increase exponentially as
+                    caloric intake increases per year, as predicted by the Holt-Winters Exponential Smoothing Algorithm.
+                   """}, {"role": "user", "content": query}],
+        model=model,
+        stream=False
+    )
+    
+    return ORJSONResponse({"query": query, "response": response.choices[0].message.content})

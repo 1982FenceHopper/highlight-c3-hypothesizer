@@ -10,6 +10,8 @@ This is the server that provides an LLM endpoint for inferencing hypotheses/summ
 - conda 24.5.0 (used for environment)
 - ONNXruntime GPU 1.19.2
 - Microsoft ONNXruntime GenAI 0.4.0
+- MLC AI Nightly CUDA 0.18.dev225
+- MLC LLM Nightly CUDA 0.18.dev57
 
 ## About
 
